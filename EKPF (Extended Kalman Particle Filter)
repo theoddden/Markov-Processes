@@ -1,0 +1,78 @@
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import datetime as dt
+
+class EKParticleFilter:
+    def __init__(self, num_particles, state_transition_func, observation_func, process_noise_covariance, observation_noise_covariance, initial_state_mean, initial_state_covariance):
+        self.num_particles = num_particles
+        self.state_transition_func = state_transition_func
+        self.observation_func = observation_func
+        self.Q = process_noise_covariance
+        self.R = observation_noise_covariance
+        self.particles = np.random.multivariate_normal(initial_state_mean, initial_state_covariance, num_particles)
+        self.weights = np.ones(num_particles) / num_particles
+
+    def predict(self):
+        for i in range(self.num_particles):
+            self.particles[i] = self.state_transition_func(self.particles[i]) + np.random.multivariate_normal(np.zeros_like(self.particles[i]), self.Q)
+
+    def update(self, observation):
+        for i in range(self.num_particles):
+            self.weights[i] *= self.calculate_likelihood(observation, self.particles[i])
+        self.weights /= np.sum(self.weights)
+
+    def calculate_likelihood(self, observation, state):
+        expected_observation = self.observation_func(state)
+        likelihood = np.exp(-0.5 * np.dot(np.dot(observation - expected_observation, np.linalg.inv(self.R)), observation - expected_observation))
+        return likelihood
+
+    def resample(self):
+        indices = np.random.choice(np.arange(self.num_particles), size=self.num_particles, replace=True, p=self.weights)
+        self.particles = self.particles[indices]
+        self.weights = np.ones(self.num_particles) / self.num_particles
+
+def state_transition_function(state):
+    # Define the state transition function (e.g., a simple random walk model)
+    return state + np.random.normal(0, 1, len(state))
+
+def observation_function(state):
+    # Define the observation function (e.g., identity function)
+    return state
+
+def get_SPY_price_data():
+    # Fetch historical SPY price data
+    spy_ticker = yf.Ticker("SPY")
+    spy_data = spy_ticker.history(period="1wk")  # Adjusted to fetch data for the past week
+    return spy_data
+
+def main():
+    # Fetch historical SPY price data
+    spy_data = get_SPY_price_data()
+    
+    # Parameters for the EKPF
+    num_particles = 10000
+    process_noise_covariance = np.eye(1) * 0.1
+    observation_noise_covariance = np.eye(1) * 0.1
+    initial_state_mean = np.array([spy_data["Close"].iloc[0]])
+    initial_state_covariance = np.eye(1) * 0.1
+    
+    # Initialize the EKPF
+    ekpf = EKParticleFilter(num_particles, state_transition_function, observation_function, process_noise_covariance, observation_noise_covariance, initial_state_mean, initial_state_covariance)
+    
+    # Perform prediction
+    for observation in spy_data["Close"].values:
+        ekpf.predict()
+        ekpf.update(np.array([observation]))
+        ekpf.resample()
+        
+    # Calculate the price range estimates
+    low_estimate = np.percentile(ekpf.particles, 10)
+    high_estimate = np.percentile(ekpf.particles, 90)
+    
+    print("Range Estimates for SPY Price in the Following Week (EKPF):")
+    print("Low Estimate:", low_estimate)
+    print("High Estimate:", high_estimate)
+    
+if __name__ == "__main__":
+    main()

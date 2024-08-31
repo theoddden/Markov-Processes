@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import datetime as dt
+import matplotlib.pyplot as plt
+
+class KalmanFilter:
+	def __init__(self, A, B, H, Q, R, x0, P0):
+		self.A = A  # State transition matrix
+		self.B = B  # Control input matrix (if applicable)
+		self.H = H  # Observation matrix
+		self.Q = Q  # Process noise covariance
+		self.R = R  # Observation noise covariance
+		self.x = x0  # Initial state estimate
+		self.P = P0  # Initial state covariance
+		
+	def predict(self, u=None):
+		# Predict the next state
+		self.x = np.dot(self.A, self.x)
+		self.P = np.dot(np.dot(self.A, self.P), self.A.T) + self.Q
+		
+	def update(self, z):
+		# Update the state estimate based on observation
+		y = z - np.dot(self.H, self.x)
+		S = np.dot(np.dot(self.H, self.P), self.H.T) + self.R
+		K = np.dot(np.dot(self.P, self.H.T), np.linalg.inv(S))
+		self.x = self.x + np.dot(K, y)
+		self.P = self.P - np.dot(np.dot(K, self.H), self.P)
+		
+def get_live_option_data(ticker):
+	asset = yf.Ticker(ticker)
+	expirations = asset.options
+	chains = pd.DataFrame()
+	for expiration in expirations:
+		opt = asset.option_chain(expiration)
+		calls = opt.calls
+		calls['optionType'] = "call"
+		puts = opt.puts
+		puts['optionType'] = "put"
+		chain = pd.concat([calls, puts])
+		chain['expiration'] = pd.to_datetime(expiration) + pd.DateOffset(hours=23, minutes=59, seconds=59)
+		chains = pd.concat([chains, chain])
+	chains["daysToExpiration"] = (chains.expiration - dt.datetime.today()).dt.days + 1
+	return chains
+
+def monte_carlo_simulation(S0, r, sigma, T, num_simulations, num_days):
+	dt = T / num_days
+	simulations = np.zeros((num_simulations, num_days + 1))
+	simulations[:, 0] = S0
+	
+	for i in range(1, num_days + 1):
+		Z = np.random.standard_normal(num_simulations)
+		S = simulations[:, i - 1] * np.exp((r - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * Z)
+		simulations[:, i] = S
+		
+	return simulations
+
+# Fetch current price of SPY
+spy_ticker = yf.Ticker("SPY")
+spy_data = spy_ticker.history(period="1d")
+S0 = spy_data["Close"].iloc[-1]
+
+# Fetch current price of VIX
+vix_ticker = yf.Ticker("^VIX")
+vix_data = vix_ticker.history(period="1d")
+vix_price = vix_data["Close"].iloc[-1] / 100  # VIX is typically expressed in percentage, so divide by 100
+
+# Parameters for Kalman Filter
+A = np.array([[1, 1], [0, 1]])  # State transition matrix with time component
+B = None  # Control input matrix (not used in this example)
+H = np.array([[1, 0]])  # Observation matrix
+Q = np.eye(2) * 0.001  # Process noise covariance
+R = np.eye(1) * 0.001  # Observation noise covariance
+x0 = np.array([0, 0])  # Initial state estimate
+P0 = np.eye(2) * 0.1  # Initial state covariance
+
+# Initialize Kalman filter
+kf = KalmanFilter(A, B, H, Q, R, x0, P0)
+
+# Input option type here:
+calls = get_live_option_data("SPY")
+
+# Calculate the implied volatility skew
+calls["moneyness"] = np.log(calls["strike"] / S0)
+calls["iv_delta"] = calls.groupby("daysToExpiration")["impliedVolatility"].diff()
+
+# Use the implied volatility skew as the observation
+observed_skew = calls.groupby("daysToExpiration")["iv_delta"].mean().values
+
+# Apply Kalman filter to update the state estimate based on observed volatility skew
+for skew in observed_skew:
+	kf.predict()
+	kf.update(np.array([skew]))
+	
+# Get the final state estimate
+final_state_estimate = kf.x
+
+# Project the state estimate to the end of the following week
+days_to_one_week = 7  # Number of days to the end of the following week
+for _ in range(days_to_one_week):
+	kf.predict()
+	
+# Get the projected asset price at the end of the following week
+projected_asset_price_week = kf.x[0]
+
+# Calculate the price range for the actual SPY price using Kalman Filter
+low_estimate_week_kalman = S0 + projected_asset_price_week - np.sqrt(kf.P[0, 0])
+high_estimate_week_kalman = S0 + projected_asset_price_week + np.sqrt(kf.P[0, 0])
+
+# Parameters for Monte Carlo Simulation
+r = 0.02  # Risk-free interest rate
+T = 7/365  # Time until expiration
+num_simulations = 10000  # Number of Monte Carlo simulations
+num_days = 5  # Number of trading days for one week
+
+# Use VIX as volatility coefficient
+sigma_low = vix_price * 0.4  # You can adjust the multiplier as needed for low volatility
+sigma_medium = vix_price  # Medium volatility coefficient same as VIX
+sigma_high = vix_price * 1.4  # You can adjust the multiplier as needed for high volatility
+
+# Perform Monte Carlo simulation with low volatility
+simulations_low = monte_carlo_simulation(S0, r, sigma_low, T, num_simulations, num_days)
+low_price_low_vol = np.percentile(simulations_low[:, -1], 10)
+high_price_low_vol = np.percentile(simulations_low[:, -1], 90)
+
+# Perform Monte Carlo simulation with medium volatility
+simulations_medium = monte_carlo_simulation(S0, r, sigma_medium, T, num_simulations, num_days)
+low_price_medium_vol = np.percentile(simulations_medium[:, -1], 10)
+medium_price_medium_vol = np.percentile(simulations_medium[:, -1], 50)
+high_price_medium_vol = np.percentile(simulations_medium[:, -1], 90)
+
+# Perform Monte Carlo simulation with high volatility
+simulations_high = monte_carlo_simulation(S0, r, sigma_high, T, num_simulations, num_days)
+low_price_high_vol = np.percentile(simulations_high[:, -1], 10)
+high_price_high_vol = np.percentile(simulations_high[:, -1], 90)
+
+# Calculate the average between Kalman Filter and Monte Carlo simulation
+low_estimate_average = (low_estimate_week_kalman + low_price_medium_vol) / 2
+high_estimate_average = (high_estimate_week_kalman + high_price_medium_vol) / 2
+
+# Print the average estimates
+print("Average Estimates for SPY Price in One Week:")
+print("Low Estimate:", low_estimate_average)
+print("High Estimate:", high_estimate_average)
+

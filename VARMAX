@@ -1,0 +1,85 @@
+import numpy as np
+import yfinance as yf
+import pandas as pd
+from statsmodels.tsa.statespace.varmax import VARMAX
+
+# Function to fetch historical price data
+def fetch_price_data(ticker, start_date, end_date):
+    return yf.download(ticker, start=start_date, end=end_date)['Close']
+
+# Function to fetch historical VIX data
+def fetch_vix_data(start_date, end_date):
+    vix_data = yf.download('^VIX', start=start_date, end=end_date)['Close']
+    vix_data = vix_data.rename('VIX')
+    return vix_data
+
+# Function to preprocess data
+def preprocess_data(price_data, vix_data):
+    # Combine price and VIX data
+    combined_data = price_data.to_frame().join(vix_data)
+    # Fill missing values
+    combined_data = combined_data.fillna(method='ffill')
+    return combined_data
+
+# Function to split data into train and test sets
+def split_data(data, train_ratio):
+    train_size = int(len(data) * train_ratio)
+    train_data, test_data = data[:train_size], data[train_size:]
+    return train_data, test_data
+
+# Function to fit VARMAX model
+def fit_varmax_model(train_data):
+    model = VARMAX(train_data, order=(1, 1))
+    varmax_result = model.fit()
+    return varmax_result
+
+# Function to forecast using VARMAX model
+def forecast_varmax_model(model_result, exog_data):
+    forecast = model_result.get_forecast(steps=len(exog_data), exog=exog_data)
+    return forecast
+
+# Function to compute high and low price range
+def compute_price_range(forecast_results):
+    forecasted_prices = forecast_results.predicted_mean
+    confidence_interval = forecast_results.conf_int()
+    low_price_spy = confidence_interval['lower Close']
+    high_price_spy = confidence_interval['upper Close']
+    low_price_vix = confidence_interval['lower VIX']
+    high_price_vix = confidence_interval['upper VIX']
+    return low_price_spy, high_price_spy, low_price_vix, high_price_vix
+
+# Main function
+def main():
+    # Fetch historical price data for SPY (S&P 500 ETF) and VIX
+    start_date = '2024-04-22'
+    end_date = '2024-08-030'
+    spy_data = fetch_price_data('SPY', start_date, end_date)
+    vix_data = fetch_vix_data(start_date, end_date)
+    
+    # Preprocess data
+    combined_data = preprocess_data(spy_data, vix_data)
+    
+    # Split data into train and test sets
+    train_ratio = 0.8
+    train_data, test_data = split_data(combined_data, train_ratio)
+    
+    # Fit VARMAX model
+    model_result = fit_varmax_model(train_data)
+    
+    # Forecast using VARMAX model
+    exog_data_test = test_data['VIX']
+    forecast_results = forecast_varmax_model(model_result, exog_data_test)
+    
+    # Compute high and low price range
+    low_price_spy, high_price_spy, low_price_vix, high_price_vix = compute_price_range(forecast_results)
+    
+    # Print results
+    print("Low Price Range for SPY for the following week:")
+    print(low_price_spy)
+    print("\nHigh Price Range for SPY for the following week:")
+    print(high_price_spy)
+
+    
+if __name__ == "__main__":
+    main()
+    

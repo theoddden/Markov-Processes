@@ -52,7 +52,7 @@ def compute_price_range(forecast_results):
 def main():
     # Fetch historical price data for SPY (S&P 500 ETF) and VIX
     start_date = '2024-04-22'
-    end_date = '2024-08-030'
+    end_date = '2024-08-30'
     spy_data = fetch_price_data('SPY', start_date, end_date)
     vix_data = fetch_vix_data(start_date, end_date)
     

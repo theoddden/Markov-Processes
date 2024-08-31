@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+import yfinance as yf
+from arch import arch_model
+
+# Fetch historical price data for SPY (S&P 500 ETF)
+spy_data = yf.download('SPY', start='2024-04-22', end='2024-08-30')['Close']  # Adjust the date range as needed
+
+# Fit Threshold GARCH (TGARCH) model
+tgarch_model = arch_model(spy_data, vol='Garch', p=1, q=1, power=1.0)  # power=1.0 for the TGARCH extension
+res_tgarch = tgarch_model.fit()
+
+# Forecast next week's volatility
+forecast_values = res_tgarch.forecast(horizon=1)  # Adjust horizon according to your needs
+next_week_volatility_std = forecast_values.variance.iloc[-1] ** 0.5
+
+# Get the latest observed price of SPY
+latest_spy_price = spy_data.iloc[-1]
+
+# Calculate the forecasted upper and lower bounds of the price range for SPY
+# Here, we compute the price range based on the forecasted volatility
+confidence_level = 1.96  # for 95% confidence interval
+next_week_upper_price = latest_spy_price + next_week_volatility_std * confidence_level
+next_week_lower_price = latest_spy_price - next_week_volatility_std * confidence_level
+
+# Print the price range for SPY
+print("Next week's price range for SPY (S&P 500 ETF) using Threshold GARCH (TGARCH) model:")
+print("Upper Price:", next_week_upper_price)
+print("Lower Price:", next_week_lower_price)

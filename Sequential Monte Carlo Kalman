@@ -1,0 +1,143 @@
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import datetime as dt
+import matplotlib.pyplot as plt
+
+class SMCFilter:
+    def __init__(self, num_particles, A, H, Q, R, x0, P0):
+        self.num_particles = num_particles
+        self.A = A  # State transition matrix
+        self.H = H  # Observation matrix
+        self.Q = Q  # Process noise covariance
+        self.R = R  # Observation noise covariance
+        self.x_particles = np.random.multivariate_normal(x0, P0, num_particles)  # Initial state particles
+        self.weights = np.ones(num_particles) / num_particles  # Initialize weights uniformly
+        self.kf = KalmanFilter(A, None, H, Q, R, x0, P0)  # Initialize Kalman filter
+        
+    def predict(self):
+        # Predict the next state for each particle using Kalman filter
+        self.kf.predict()
+        self.x_particles = self.kf.x + np.random.multivariate_normal(np.zeros_like(self.x_particles[0]), self.Q, self.num_particles)
+        
+    def update(self, z):
+        # Update the state particles and weights based on observation z
+        for i in range(self.num_particles):
+            # Update state estimate for particle i using Kalman filter
+            self.kf.update(z)
+            self.x_particles[i] = self.kf.x
+            
+            # Calculate observation residual
+            y = z - np.dot(self.H, self.kf.x)
+            
+            # Update weight using likelihood from Kalman filter
+            self.weights[i] *= self.calculate_likelihood(y)
+            
+        # Normalize weights
+        self.weights /= np.sum(self.weights)
+        
+    def calculate_likelihood(self, y):
+        # Calculate likelihood of observation y given current state estimate using Kalman filter
+        S = np.dot(np.dot(self.H, self.Q), self.H.T) + self.R
+        likelihood = np.exp(-0.5 * np.dot(np.dot(y.T, np.linalg.inv(S)), y))
+        return likelihood
+    
+    def resample(self):
+        # Resample particles based on weights
+        indices = np.random.choice(np.arange(self.num_particles), size=self.num_particles, replace=True, p=self.weights)
+        self.x_particles = self.x_particles[indices]
+        self.weights = np.ones(self.num_particles) / self.num_particles
+        
+class KalmanFilter:
+    def __init__(self, A, B, H, Q, R, x0, P0):
+        self.A = A  # State transition matrix
+        self.B = B  # Control input matrix (if applicable)
+        self.H = H  # Observation matrix
+        self.Q = Q  # Process noise covariance
+        self.R = R  # Observation noise covariance
+        self.x = x0  # Initial state estimate
+        self.P = P0  # Initial state covariance
+        
+    def predict(self):
+        # Predict the next state
+        self.x = np.dot(self.A, self.x)
+        self.P = np.dot(np.dot(self.A, self.P), self.A.T) + self.Q
+        
+    def update(self, z):
+        # Update the state estimate based on observation
+        y = z - np.dot(self.H, self.x)
+        S = np.dot(np.dot(self.H, self.P), self.H.T) + self.R
+        K = np.dot(np.dot(self.P, self.H.T), np.linalg.inv(S))
+        self.x = self.x + np.dot(K, y)
+        self.P = self.P - np.dot(np.dot(K, self.H), self.P)
+
+def get_live_option_data(ticker, option_type):
+    asset = yf.Ticker(ticker)
+    expirations = asset.options
+    chains = pd.DataFrame()
+    for expiration in expirations:
+        opt = asset.option_chain(expiration)
+        options = opt.calls if option_type == "call" else opt.puts
+        options['optionType'] = option_type
+        chain = options
+        chain['expiration'] = pd.to_datetime(expiration) + pd.DateOffset(hours=23, minutes=59, seconds=59)
+        chains = pd.concat([chains, chain])
+    chains["daysToExpiration"] = (chains.expiration - dt.datetime.today()).dt.days + 1
+    return chains
+
+def calculate_price_range(ticker):
+    # Fetch live option data for calls and puts
+    calls = get_live_option_data(ticker, option_type="call")
+    puts = get_live_option_data(ticker, option_type="put")
+    
+    # Concatenate calls and puts data
+    options_data = pd.concat([calls, puts])
+    
+    # Calculate the implied volatility skew
+    options_data["moneyness"] = np.log(options_data["strike"] / S0)
+    options_data["iv_delta"] = options_data.groupby("daysToExpiration")["impliedVolatility"].diff()
+    
+    # Use the implied volatility skew as the observation
+    observed_skew = options_data.groupby("daysToExpiration")["iv_delta"].mean().values
+    
+    # Parameters for SMC Filter
+    num_particles = 10000  # Number of particles
+    A = np.array([[1, 1], [0, 1]])  # State transition matrix with time component
+    H = np.array([[1, 0]])  # Observation matrix
+    Q = np.eye(2) * 0.001  # Process noise covariance
+    R = np.eye(1) * 0.001  # Observation noise covariance
+    x0 = np.array([0, 0])  # Initial state estimate
+    P0 = np.eye(2) * 0.1  # Initial state covariance
+    
+    # Initialize SMC filter
+    smc_filter = SMCFilter(num_particles, A, H, Q, R, x0, P0)
+    
+    # Apply SMC filter to update the state estimate based on observed volatility skew
+    for skew in observed_skew:
+        smc_filter.predict()
+        smc_filter.update(np.array([skew]))
+        smc_filter.resample()
+        
+    # Project the state estimate to the next trading day
+    for _ in range(90):  # Adjust if needed for multiple days
+        smc_filter.predict()
+        smc_filter.resample()
+        
+    # Get the projected asset price for the next trading day
+    projected_asset_price = np.mean(smc_filter.x_particles[:, 0])
+    
+    # Calculate the price range for the actual asset price using SMC Filter
+    low_estimate = S0 + projected_asset_price - np.sqrt(np.var(smc_filter.x_particles[:, 0]))
+    high_estimate = S0 + projected_asset_price + np.sqrt(np.var(smc_filter.x_particles[:, 0]))
+    
+    return low_estimate, high_estimate
+
+# Example usage:
+ticker = "SPY"
+qqq_ticker = yf.Ticker(ticker)
+qqq_data = qqq_ticker.history(period="90d")
+S0 = qqq_data["Close"].iloc[-1]
+low_estimate, high_estimate = calculate_price_range(ticker)
+print(f"Range Estimates for {ticker} Price for the Next Trading Day (SMC with Kalman Filter):")
+print("Low Estimate:", low_estimate)
+print("High Estimate:", high_estimate)

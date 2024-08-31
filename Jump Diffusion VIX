@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+#!/usr/bin/env python3
+import yfinance as yf
+import numpy as np
+
+# Function to fetch historical SPY data from Yahoo Finance
+def get_spy_data(start_date, end_date):
+	spy_data = yf.download("SPY", start=start_date, end=end_date)
+	return spy_data
+
+# Function to fetch live VIX data from Yahoo Finance
+def get_live_vix():
+	vix_data = yf.download("^VIX", period="1d")
+	live_vix = vix_data['Close'].iloc[-1]  # Get the most recent VIX value
+	return live_vix
+
+# Function to generate price range based on jump diffusion model
+def generate_price_range(initial_price, num_steps, mean_reversion_rate, volatility, jump_intensity, jump_mean, jump_std):
+	price_range = [initial_price]
+	current_price = initial_price
+	
+	for _ in range(num_steps):
+		# Generate a random sample from a normal distribution for jump component
+		jump_component = np.random.normal(loc=jump_mean, scale=jump_std)
+		# Generate a random sample from a normal distribution for diffusion component
+		diffusion_component = np.random.normal(loc=0, scale=volatility)
+		# Update price with jump and diffusion components
+		current_price += mean_reversion_rate * (initial_price - current_price) + diffusion_component + jump_component
+		price_range.append(current_price)
+		
+	return price_range
+
+# Function to calculate average low and high from the price range
+def calculate_low_high_average(price_range):
+	low_average = np.mean(price_range[:len(price_range)//2])
+	high_average = np.mean(price_range[len(price_range)//2:])
+	return low_average, high_average
+
+# Main function to run jump diffusion model multiple times
+def main(num_runs):
+	# Fetch historical SPY data for the previous week
+	end_date_previous = "2024-06-05"  # Previous week's end date
+	start_date_previous = "2024-04-22"  # Previous week's start date
+	spy_data_previous = get_spy_data(start_date_previous, end_date_previous)
+	
+	# Fetch live VIX data for the current day
+	live_vix = get_live_vix()
+	
+	# Define thresholds for volatility regimes
+	low_threshold = 12.5 # Example threshold for low volatility
+	medium_threshold = 15  # Example threshold for medium volatility
+	high_threshold = 18.5
+	
+	# Determine volatility regime based on live VIX data
+	if live_vix < low_threshold:
+		volatility_regime = "Low"
+	elif low_threshold <= live_vix <= high_threshold:
+		volatility_regime = "Medium"
+	else:
+		volatility_regime = "High"
+		
+	# Assume initial SPY price is the closing price on the previous end date
+	initial_price = spy_data_previous['Close'].iloc[-1]
+	
+	# Define parameters for jump diffusion model for one week's worth of trading days
+	num_steps = 10000  # Number of steps to simulate for one week (5 trading days)
+	mean_reversion_rate = 0.01  # Mean reversion rate
+	volatility = live_vix / 10  # Volatility (scaled based on live VIX data)
+	jump_intensity = 0.1  # Intensity of jump events
+	jump_mean = 0.01  # Mean of jump size
+	jump_std = 0.1  # Standard deviation of jump size
+	
+	# Initialize lists to store lows and high averages from each run
+	lows = []
+	high_averages = []
+	
+	# Run the jump diffusion model multiple times
+	for _ in range(num_runs):
+		# Generate price range for SPY based on jump diffusion model for one week
+		price_range_future = generate_price_range(initial_price, num_steps, mean_reversion_rate, volatility, jump_intensity, jump_mean, jump_std)
+		
+		# Calculate average low and high from the price range for one week
+		low_average_future, high_average_future = calculate_low_high_average(price_range_future)
+		
+		# Store lows and high averages
+		lows.append(low_average_future)
+		high_averages.append(high_average_future)
+		
+	# Calculate the average of lows and high averages from all runs
+	average_low = np.mean(lows)
+	average_high = np.mean(high_averages)
+	
+	# Print the average lows and high averages
+	print("Average Low from", num_runs, "runs:", average_low)
+	print("Average High from", num_runs, "runs:", average_high)
+	print("Volatility Regime based on Live VIX Data:", volatility_regime)
+	
+if __name__ == "__main__":
+	main(1000)  # Run the jump diffusion model 1000 times
+	

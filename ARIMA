@@ -1,0 +1,19 @@
+import pandas as pd
+import yfinance as yf
+from statsmodels.tsa.arima.model import ARIMA
+
+# Fetch historical price data (e.g., using yfinance)
+price_data = yf.download('SPY', start='2024-04-22', end='2024-08-30')['Close']
+
+# Fit ARIMA model
+arima_model = ARIMA(price_data, order=(5,1,0))  # Example order, adjust as needed
+arima_results = arima_model.fit()
+
+# Forecast next week's prices
+forecast = arima_results.forecast(steps=5)  # Adjust steps according to your needs
+next_week_low = forecast.min()
+next_week_high = forecast.max()
+
+# Print the forecasted prices
+print("Next week's low estimate:", next_week_low)
+print("Next week's high estimate:", next_week_high)

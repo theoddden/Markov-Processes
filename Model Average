@@ -1,14 +1,16 @@
+
 import numpy as np
 
 # Define the weights for each model
-weight_tgarch = 0.14
+weight_tgarch = 0.10
 weight_tgarch_kf = 0.08
-weight_smc_kf_vix = 0.21
+weight_smc_kf_vix = 0.20
 weight_mc_vix_kf = 0.04
 weight_arima = 0.04
-weight_ekpf = 0.15
+weight_ekpf = 0.10
 weight_varmax = 0.08
-weight_jd_vix = 0.26
+weight_jd_vix = 0.16
+weight_delta_ukf = 0.20
 
 # Define the upper and lower price estimates for each model
 lower_tgarch = 531.794003
@@ -35,6 +37,9 @@ high_estimate_varmax = 569.957662
 low_estimate_jd_vix = 559.2467307056695
 high_estimate_jd_vix = 559.3821844250174
 
+low_estimate_delta_ukf = 560.55
+high_estimate_delta_ukf = 572.95
+
 # Calculate the weighted sum of the low and high estimates
 weighted_low_estimate = (
     weight_tgarch * lower_tgarch +
@@ -44,7 +49,7 @@ weighted_low_estimate = (
     weight_ekpf * low_estimate_ekpf +
     weight_varmax * low_estimate_varmax +
     weight_jd_vix * low_estimate_jd_vix +
-    weight_tgarch_kf * low_tgarch_kf
+    weight_tgarch_kf * low_tgarch_kf + weight_delta_ukf * low_estimate_delta_ukf
 )
 
 weighted_high_estimate = (
@@ -55,7 +60,7 @@ weighted_high_estimate = (
     weight_ekpf * high_estimate_ekpf +
     weight_varmax * high_estimate_varmax +
     weight_jd_vix * high_estimate_jd_vix +
-    weight_tgarch_kf * high_tgarch_kf
+    weight_tgarch_kf * high_tgarch_kf + weight_delta_ukf * high_estimate_delta_ukf
 )
 
 # Print the weighted low and high estimates

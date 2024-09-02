@@ -55,23 +55,27 @@ def calculate_delta(S, K, T, r, sigma, option_type='call'):
 		return -norm.cdf(-d1)
 	
 def calculate_weighted_delta_exposure(calls, puts, S, K, T, r, filtered_delta):
-	def weighted_exposure(options, option_type):
-		exposure = 0
-		for i, row in options.iterrows():
-			strike = row['strike']
-			sigma = row['impliedVolatility']
-			open_interest = row['openInterest']
-			
-			delta = filtered_delta[i] if i < len(filtered_delta) else calculate_delta(S, strike, T, r, sigma, option_type)
-			itm_probability = norm.cdf((np.log(S/strike) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T)))
-			
-			exposure += delta * open_interest * 100 * itm_probability  # Weighted by ITM probability
-			
-		return exposure
+	call_exposure = 0
+	put_exposure = 0
 	
-	call_exposure = weighted_exposure(calls, 'call')
-	put_exposure = weighted_exposure(puts, 'put')
-	
+	for i, call_row in calls.iterrows():
+		call_strike = call_row['strike']
+		call_iv = call_row['impliedVolatility']
+		call_oi = call_row['openInterest']
+		
+		call_delta = filtered_delta[i] if i < len(filtered_delta) else calculate_delta(S, call_strike, T, r, call_iv)
+		call_itm_probability = norm.cdf((np.log(S/call_strike) + (r + 0.5*call_iv**2)*T) / (call_iv*np.sqrt(T)))
+		call_exposure += call_delta * call_oi * 100 * call_itm_probability
+		
+	for i, put_row in puts.iterrows():
+		put_strike = put_row['strike']
+		put_iv = put_row['impliedVolatility']
+		put_oi = put_row['openInterest']
+		
+		put_delta = -filtered_delta[i] if i < len(filtered_delta) else -calculate_delta(S, put_strike, T, r, put_iv, 'put')
+		put_itm_probability = norm.cdf(-(np.log(S/put_strike) + (r + 0.5*put_iv**2)*T) / (put_iv*np.sqrt(T)))
+		put_exposure += put_delta * put_oi * 100 * put_itm_probability
+		
 	return call_exposure - put_exposure  # Net exposure
 
 def estimate_price_impact(weighted_delta_exposure, S, avg_volume, days=7):

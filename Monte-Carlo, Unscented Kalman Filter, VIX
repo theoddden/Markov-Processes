@@ -5,28 +5,85 @@ import yfinance as yf
 import datetime as dt
 import matplotlib.pyplot as plt
 
-class KalmanFilter:
-	def __init__(self, A, B, H, Q, R, x0, P0):
-		self.A = A  # State transition matrix
-		self.B = B  # Control input matrix (if applicable)
-		self.H = H  # Observation matrix
+class UnscentedKalmanFilter:
+	def __init__(self, f, h, Q, R, x0, P0, alpha=1e-3, beta=2, kappa=0):
+		self.f = f  # State transition function
+		self.h = h  # Observation function
 		self.Q = Q  # Process noise covariance
 		self.R = R  # Observation noise covariance
 		self.x = x0  # Initial state estimate
 		self.P = P0  # Initial state covariance
+		self.n = len(x0)  # Dimension of the state vector
 		
-	def predict(self, u=None):
-		# Predict the next state
-		self.x = np.dot(self.A, self.x)
-		self.P = np.dot(np.dot(self.A, self.P), self.A.T) + self.Q
+		# Compute lambda and weights for sigma points
+		self.alpha = alpha
+		self.beta = beta
+		self.kappa = kappa
+		self.lmbda = alpha ** 2 * (self.n + kappa) - self.n
+		self.gamma = np.sqrt(self.n + self.lmbda)
 		
+		self.Wm = np.full(2 * self.n + 1, 0.5 / (self.n + self.lmbda))
+		self.Wm[0] = self.lmbda / (self.n + self.lmbda)
+		self.Wc = np.copy(self.Wm)
+		self.Wc[0] += (1 - alpha ** 2 + beta)
+		
+	def sigma_points(self, x, P):
+		"""Generate sigma points and weights for the Unscented Kalman Filter."""
+		sigma_points = np.zeros((2 * self.n + 1, self.n))
+		sigma_points[0] = x
+		sqrt_P = np.linalg.cholesky(P)
+		
+		for i in range(self.n):
+			sigma_points[i + 1] = x + self.gamma * sqrt_P[:, i]
+			sigma_points[self.n + i + 1] = x - self.gamma * sqrt_P[:, i]
+			
+		return sigma_points
+	
+	def predict(self):
+		# Generate sigma points
+		sigma_points = self.sigma_points(self.x, self.P)
+		
+		# Predict sigma points
+		predicted_sigma_points = np.array([self.f(sp) for sp in sigma_points])
+		
+		# Predicted state mean
+		self.x = np.dot(self.Wm, predicted_sigma_points)
+		
+		# Predicted state covariance
+		self.P = self.Q.copy()
+		for i in range(2 * self.n + 1):
+			diff = (predicted_sigma_points[i] - self.x).reshape(-1, 1)
+			self.P += self.Wc[i] * np.dot(diff, diff.T)
+			
 	def update(self, z):
-		# Update the state estimate based on observation
-		y = z - np.dot(self.H, self.x)
-		S = np.dot(np.dot(self.H, self.P), self.H.T) + self.R
-		K = np.dot(np.dot(self.P, self.H.T), np.linalg.inv(S))
-		self.x = self.x + np.dot(K, y)
-		self.P = self.P - np.dot(np.dot(K, self.H), self.P)
+		# Generate sigma points
+		sigma_points = self.sigma_points(self.x, self.P)
+		
+		# Predict measurement sigma points
+		predicted_measurements = np.array([self.h(sp) for sp in sigma_points])
+		
+		# Predicted measurement mean
+		z_pred = np.dot(self.Wm, predicted_measurements)
+		
+		# Innovation covariance
+		S = self.R.copy()
+		for i in range(2 * self.n + 1):
+			diff = (predicted_measurements[i] - z_pred).reshape(-1, 1)
+			S += self.Wc[i] * np.dot(diff, diff.T)
+			
+		# Cross covariance
+		cross_covariance = np.zeros((self.n, len(z)))
+		for i in range(2 * self.n + 1):
+			state_diff = (sigma_points[i] - self.x).reshape(-1, 1)
+			measurement_diff = (predicted_measurements[i] - z_pred).reshape(-1, 1)
+			cross_covariance += self.Wc[i] * np.dot(state_diff, measurement_diff.T)
+			
+		# Kalman gain
+		K = np.dot(cross_covariance, np.linalg.inv(S))
+		
+		# Update state mean and covariance
+		self.x += np.dot(K, (z - z_pred))
+		self.P -= np.dot(np.dot(K, S), K.T)
 		
 def get_live_option_data(ticker):
 	asset = yf.Ticker(ticker)
@@ -56,6 +113,16 @@ def monte_carlo_simulation(S0, r, sigma, T, num_simulations, num_days):
 		
 	return simulations
 
+# State transition function (linear model for this example)
+def state_transition(x):
+	A = np.array([[1, 1], [0, 1]])  # State transition matrix
+	return np.dot(A, x)
+
+# Observation function
+def observation_function(x):
+	H = np.array([[1, 0]])  # Observation matrix
+	return np.dot(H, x)
+
 # Fetch current price of SPY
 spy_ticker = yf.Ticker("SPY")
 spy_data = spy_ticker.history(period="1d")
@@ -66,17 +133,14 @@ vix_ticker = yf.Ticker("^VIX")
 vix_data = vix_ticker.history(period="1d")
 vix_price = vix_data["Close"].iloc[-1] / 100  # VIX is typically expressed in percentage, so divide by 100
 
-# Parameters for Kalman Filter
-A = np.array([[1, 1], [0, 1]])  # State transition matrix with time component
-B = None  # Control input matrix (not used in this example)
-H = np.array([[1, 0]])  # Observation matrix
+# Parameters for Unscented Kalman Filter
 Q = np.eye(2) * 0.001  # Process noise covariance
 R = np.eye(1) * 0.001  # Observation noise covariance
 x0 = np.array([0, 0])  # Initial state estimate
 P0 = np.eye(2) * 0.1  # Initial state covariance
 
-# Initialize Kalman filter
-kf = KalmanFilter(A, B, H, Q, R, x0, P0)
+# Initialize Unscented Kalman filter
+ukf = UnscentedKalmanFilter(state_transition, observation_function, Q, R, x0, P0)
 
 # Input option type here:
 calls = get_live_option_data("SPY")
@@ -88,25 +152,25 @@ calls["iv_delta"] = calls.groupby("daysToExpiration")["impliedVolatility"].diff(
 # Use the implied volatility skew as the observation
 observed_skew = calls.groupby("daysToExpiration")["iv_delta"].mean().values
 
-# Apply Kalman filter to update the state estimate based on observed volatility skew
+# Apply Unscented Kalman filter to update the state estimate based on observed volatility skew
 for skew in observed_skew:
-	kf.predict()
-	kf.update(np.array([skew]))
+	ukf.predict()
+	ukf.update(np.array([skew]))
 	
 # Get the final state estimate
-final_state_estimate = kf.x
+final_state_estimate = ukf.x
 
 # Project the state estimate to the end of the following week
 days_to_one_week = 7  # Number of days to the end of the following week
 for _ in range(days_to_one_week):
-	kf.predict()
+	ukf.predict()
 	
 # Get the projected asset price at the end of the following week
-projected_asset_price_week = kf.x[0]
+projected_asset_price_week = ukf.x[0]
 
-# Calculate the price range for the actual SPY price using Kalman Filter
-low_estimate_week_kalman = S0 + projected_asset_price_week - np.sqrt(kf.P[0, 0])
-high_estimate_week_kalman = S0 + projected_asset_price_week + np.sqrt(kf.P[0, 0])
+# Calculate the price range for the actual SPY price using Unscented Kalman Filter
+low_estimate_week_ukf = S0 + projected_asset_price_week - np.sqrt(ukf.P[0, 0])
+high_estimate_week_ukf = S0 + projected_asset_price_week + np.sqrt(ukf.P[0, 0])
 
 # Parameters for Monte Carlo Simulation
 r = 0.02  # Risk-free interest rate
@@ -135,12 +199,11 @@ simulations_high = monte_carlo_simulation(S0, r, sigma_high, T, num_simulations,
 low_price_high_vol = np.percentile(simulations_high[:, -1], 10)
 high_price_high_vol = np.percentile(simulations_high[:, -1], 90)
 
-# Calculate the average between Kalman Filter and Monte Carlo simulation
-low_estimate_average = (low_estimate_week_kalman + low_price_medium_vol) / 2
-high_estimate_average = (high_estimate_week_kalman + high_price_medium_vol) / 2
+# Calculate the average between Unscented Kalman Filter and Monte Carlo simulation
+low_estimate_average = (low_estimate_week_ukf + low_price_medium_vol) / 2
+high_estimate_average = (high_estimate_week_ukf + high_price_medium_vol) / 2
 
 # Print the average estimates
 print("Average Estimates for SPY Price in One Week:")
 print("Low Estimate:", low_estimate_average)
 print("High Estimate:", high_estimate_average)
-

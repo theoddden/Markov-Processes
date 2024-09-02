@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import datetime as dt
+
+class UnscentedKalmanFilter:
+	def __init__(self, f, h, Q, R, x0, P0, alpha=1e-3, beta=2, kappa=0):
+		self.f = f  # State transition function
+		self.h = h  # Observation function
+		self.Q = Q  # Process noise covariance
+		self.R = R  # Observation noise covariance
+		self.x = x0  # Initial state estimate
+		self.P = P0  # Initial state covariance
+		self.n = len(x0)  # Dimension of the state vector
+		
+		# Calculate lambda and weights for sigma points
+		self.alpha = alpha
+		self.beta = beta
+		self.kappa = kappa
+		self.lmbda = alpha ** 2 * (self.n + kappa) - self.n
+		self.gamma = np.sqrt(self.n + self.lmbda)
+		
+		self.Wm = np.full(2 * self.n + 1, 0.5 / (self.n + self.lmbda))
+		self.Wm[0] = self.lmbda / (self.n + self.lmbda)
+		self.Wc = np.copy(self.Wm)
+		self.Wc[0] += (1 - alpha ** 2 + beta)
+		
+	def sigma_points(self, x, P):
+		"""Generate sigma points and weights for the Unscented Kalman Filter."""
+		sigma_points = np.zeros((2 * self.n + 1, self.n))
+		sigma_points[0] = x
+		sqrt_P = np.linalg.cholesky(P)
+		
+		for i in range(self.n):
+			sigma_points[i + 1] = x + self.gamma * sqrt_P[:, i]
+			sigma_points[self.n + i + 1] = x - self.gamma * sqrt_P[:, i]
+			
+		return sigma_points
+	
+	def predict(self):
+		# Generate sigma points
+		sigma_points = self.sigma_points(self.x, self.P)
+		
+		# Predict sigma points
+		predicted_sigma_points = np.array([self.f(sp) for sp in sigma_points])
+		
+		# Predicted state mean
+		self.x = np.dot(self.Wm, predicted_sigma_points)
+		
+		# Predicted state covariance
+		self.P = self.Q.copy()
+		for i in range(2 * self.n + 1):
+			diff = (predicted_sigma_points[i] - self.x).reshape(-1, 1)
+			self.P += self.Wc[i] * np.dot(diff, diff.T)
+			
+	def update(self, z):
+		# Generate sigma points
+		sigma_points = self.sigma_points(self.x, self.P)
+		
+		# Predict measurement sigma points
+		predicted_measurements = np.array([self.h(sp) for sp in sigma_points])
+		
+		# Predicted measurement mean
+		z_pred = np.dot(self.Wm, predicted_measurements)
+		
+		# Innovation covariance
+		S = self.R.copy()
+		for i in range(2 * self.n + 1):
+			diff = (predicted_measurements[i] - z_pred).reshape(-1, 1)
+			S += self.Wc[i] * np.dot(diff, diff.T)
+			
+		# Cross covariance
+		cross_covariance = np.zeros((self.n, len(z)))
+		for i in range(2 * self.n + 1):
+			state_diff = (sigma_points[i] - self.x).reshape(-1, 1)
+			measurement_diff = (predicted_measurements[i] - z_pred).reshape(-1, 1)
+			cross_covariance += self.Wc[i] * np.dot(state_diff, measurement_diff.T)
+			
+		# Kalman gain
+		K = np.dot(cross_covariance, np.linalg.inv(S))
+		
+		# Update state mean and covariance
+		self.x += np.dot(K, (z - z_pred))
+		self.P -= np.dot(np.dot(K, S), K.T)
+		
+def get_live_option_data(ticker, option_type):
+	asset = yf.Ticker(ticker)
+	expirations = asset.options
+	chains = pd.DataFrame()
+	for expiration in expirations:
+		opt = asset.option_chain(expiration)
+		options = opt.calls if option_type == "call" else opt.puts
+		options['optionType'] = option_type
+		chain = options
+		chain['expiration'] = pd.to_datetime(expiration) + pd.DateOffset(hours=23, minutes=59, seconds=59)
+		chains = pd.concat([chains, chain])
+	chains["daysToExpiration"] = (chains.expiration - dt.datetime.today()).dt.days + 1
+	return chains
+
+def calculate_price_range(ticker):
+	# Fetch live option data for calls and puts
+	calls = get_live_option_data(ticker, option_type="call")
+	puts = get_live_option_data(ticker, option_type="put")
+	
+	# Concatenate calls and puts data
+	options_data = pd.concat([calls, puts])
+	
+	# Calculate the implied volatility skew
+	options_data["moneyness"] = np.log(options_data["strike"] / S0)
+	options_data["iv_delta"] = options_data.groupby("daysToExpiration")["impliedVolatility"].diff()
+	
+	# Use the implied volatility skew as the observation
+	observed_skew = options_data.groupby("daysToExpiration")["iv_delta"].mean().values
+	
+	# Fetch VIX data for volatility coefficient
+	vix_ticker = yf.Ticker("^VIX")
+	vix_data = vix_ticker.history(period="7d")  # VIX for the last 7 days
+	vix_coeff = vix_data["Close"].mean() / 100  # Normalized VIX coefficient
+	
+	# Parameters for UKF
+	A = np.array([[1, 1], [0, 1]])  # State transition matrix
+	H = np.array([[1, 0]])  # Observation matrix
+	Q = np.eye(2) * vix_coeff  # Process noise covariance adjusted with VIX
+	R = np.eye(1) * vix_coeff  # Observation noise covariance adjusted with VIX
+	x0 = np.array([0, 0])  # Initial state estimate
+	P0 = np.eye(2) * 0.1  # Initial state covariance
+	
+	# State transition and observation functions
+	def state_transition(x):
+		return np.dot(A, x)
+	
+	def observation_function(x):
+		return np.dot(H, x)
+	
+	# Initialize UKF
+	ukf = UnscentedKalmanFilter(state_transition, observation_function, Q, R, x0, P0)
+	
+	# Apply UKF to update the state estimate based on observed volatility skew
+	for skew in observed_skew:
+		ukf.predict()
+		ukf.update(np.array([skew]))
+		
+	# Project the state estimate for one week (5 trading days)
+	for _ in range(5):  # 5 days forecast
+		ukf.predict()
+	
+	# Get the projected asset price for one week ahead
+	projected_asset_price = ukf.x[0]
+	
+	# Calculate the price range for the actual asset price using UKF
+	low_estimate = S0 + projected_asset_price - np.sqrt(ukf.P[0, 0])
+	high_estimate = S0 + projected_asset_price + np.sqrt(ukf.P[0, 0])
+	
+	return low_estimate, high_estimate
+
+# Example usage:
+ticker = "SPY"
+spy_ticker = yf.Ticker(ticker)
+spy_data = spy_ticker.history(period="90d")
+S0 = spy_data["Close"].iloc[-1]
+low_estimate, high_estimate = calculate_price_range(ticker)
+print(f"Range Estimates for {ticker} Price One Week Ahead (UKF with VIX Adjustment):")
+print("Low Estimate:", low_estimate)
+print("High Estimate:", high_estimate)

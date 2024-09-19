@@ -1,16 +1,16 @@
-
+#!/usr/bin/env python3
 import numpy as np
 
 # Define the weights for each model
-weight_tgarch = 0.10
-weight_tgarch_kf = 0.08
-weight_smc_kf_vix = 0.20
+weight_tgarch = 0.06
+weight_tgarch_kf = 0.10
+weight_smc_kf_vix = 0.22
 weight_mc_vix_kf = 0.04
-weight_arima = 0.04
+weight_arima = 0.02
 weight_ekpf = 0.10
-weight_varmax = 0.08
-weight_jd_vix = 0.16
-weight_delta_ukf = 0.20
+weight_varmax = 0.06
+weight_jd_vix = 0.10
+weight_delta_ukf = 0.30
 
 # Define the upper and lower price estimates for each model
 lower_tgarch = 531.794003
